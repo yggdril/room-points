@@ -6,9 +6,10 @@ class PointLocatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("3D Point Locator")
-        self.root.geometry("520x720")
+        self.root.geometry("540x780")
 
         self.points = []
+        self.ref_indices = [0, 1, 2]   # indices of points used as references
         self.reference_ready = False
 
         # --- Reference points section ---
@@ -43,17 +44,15 @@ class PointLocatorApp:
         self.entry_z = tk.Entry(add_frame)
         self.entry_z.pack(fill="x")
 
-        tk.Label(add_frame, text="Distance to point 1:").pack(anchor="w")
-        self.entry_da = tk.Entry(add_frame)
-        self.entry_da.pack(fill="x")
+        # Dynamic distance fields live in this frame
+        self.dist_frame = tk.Frame(add_frame)
+        self.dist_frame.pack(fill="x")
+        self.dist_labels = []
+        self.dist_entries = []
+        self.reset_distance_fields()
 
-        tk.Label(add_frame, text="Distance to point 2:").pack(anchor="w")
-        self.entry_db = tk.Entry(add_frame)
-        self.entry_db.pack(fill="x")
-
-        tk.Label(add_frame, text="Distance to point 3:").pack(anchor="w")
-        self.entry_dc = tk.Entry(add_frame)
-        self.entry_dc.pack(fill="x")
+        self.use_as_ref = tk.BooleanVar(value=False)
+        tk.Checkbutton(add_frame, text="Use as reference point", variable=self.use_as_ref).pack(anchor="w", pady=2)
 
         self.add_button = tk.Button(add_frame, text="Add point", command=self.add_point, state="disabled")
         self.add_button.pack(pady=5)
@@ -61,6 +60,7 @@ class PointLocatorApp:
         # --- Buttons ---
         btn_frame = tk.Frame(root)
         btn_frame.pack(fill="x", padx=10, pady=5)
+        tk.Button(btn_frame, text="Delete last point", command=self.delete_last).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Clear all", command=self.clear_all).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Save to .txt", command=self.save_points).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Load from .txt", command=self.load_points).pack(side="left", padx=5)
@@ -69,6 +69,26 @@ class PointLocatorApp:
         tk.Label(root, text="Points:").pack(anchor="w", padx=10)
         self.output = scrolledtext.ScrolledText(root, height=14, state="disabled", font=("Consolas", 10))
         self.output.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def add_dist_entry(self, label_text):
+        lbl = tk.Label(self.dist_frame, text=label_text)
+        lbl.pack(anchor="w")
+        ent = tk.Entry(self.dist_frame)
+        ent.pack(fill="x")
+        self.dist_labels.append(lbl)
+        self.dist_entries.append(ent)
+
+    def reset_distance_fields(self):
+        for lbl in self.dist_labels:
+            lbl.destroy()
+        for ent in self.dist_entries:
+            ent.destroy()
+        self.dist_labels = []
+        self.dist_entries = []
+        self.add_dist_entry("Distance to point 1:")
+        self.add_dist_entry("Distance to point 2:")
+        self.add_dist_entry("Distance to point 3:")
+        self.ref_indices = [0, 1, 2]
 
     def log(self, text):
         self.output.config(state="normal")
@@ -84,7 +104,8 @@ class PointLocatorApp:
             return
         self.log("Points:")
         for i, p in enumerate(self.points, start=1):
-            self.log(f"Point {i:2d}: ({p[0]:8.3f}, {p[1]:8.3f}, {p[2]:8.3f})")
+            marker = " *" if (i-1) in self.ref_indices else ""
+            self.log(f"Point {i:2d}: ({p[0]:8.3f}, {p[1]:8.3f}, {p[2]:8.3f}){marker}")
 
     def set_reference(self):
         try:
@@ -107,7 +128,6 @@ class PointLocatorApp:
         if self.side_var.get() == "n":
             y3 = -y3
 
-        # Update only the first three points; keep any points that were added later
         new_first_three = [(0.0, 0.0, 0.0), (d12, 0.0, 0.0), (x3, y3, 0.0)]
         if len(self.points) < 3:
             self.points = new_first_three
@@ -119,8 +139,47 @@ class PointLocatorApp:
         self.cy = y3
         self.reference_ready = True
         self.add_button.config(state="normal")
-
+        self.reset_distance_fields()
         self.refresh_display()
+
+    def calculate_xy(self, z, distances):
+        """Least-squares 2D solution using all current reference points."""
+        refs = [self.points[i] for i in self.ref_indices]
+        if len(refs) < 3:
+            return None
+
+        r2s = []
+        for d in distances:
+            r2 = d * d - z * z
+            if r2 < -1e-6:
+                return None
+            r2s.append(max(0.0, r2))
+
+        x0, y0 = refs[0][0], refs[0][1]
+        r0 = r2s[0]
+
+        s11 = s12 = s22 = 0.0
+        t1 = t2 = 0.0
+
+        for i in range(1, len(refs)):
+            xi, yi = refs[i][0], refs[i][1]
+            ri = r2s[i]
+            a1 = 2 * (xi - x0)
+            a2 = 2 * (yi - y0)
+            rhs = (r0 - ri) - (x0*x0 - xi*xi) - (y0*y0 - yi*yi)
+            s11 += a1 * a1
+            s12 += a1 * a2
+            s22 += a2 * a2
+            t1 += a1 * rhs
+            t2 += a2 * rhs
+
+        det = s11 * s22 - s12 * s12
+        if abs(det) < 1e-8:
+            return None
+
+        x = (s22 * t1 - s12 * t2) / det
+        y = (-s12 * t1 + s11 * t2) / det
+        return x, y
 
     def add_point(self):
         if not self.reference_ready:
@@ -128,40 +187,61 @@ class PointLocatorApp:
 
         try:
             z = float(self.entry_z.get())
-            dA = float(self.entry_da.get())
-            dB = float(self.entry_db.get())
-            dC = float(self.entry_dc.get())
-            if dA <= 0 or dB <= 0 or dC <= 0:
-                raise ValueError
+            distances = []
+            for ent in self.dist_entries:
+                d = float(ent.get())
+                if d <= 0:
+                    raise ValueError
+                distances.append(d)
         except ValueError:
-            messagebox.showerror("Input error", "Please enter valid numbers (distances must be positive).")
+            messagebox.showerror("Input error", "Please enter valid positive distances and a numeric height.")
             return
 
-        rA2 = dA**2 - z**2
-        rB2 = dB**2 - z**2
-        rC2 = dC**2 - z**2
-
-        if rA2 < 0 or rB2 < 0 or rC2 < 0:
-            messagebox.showerror("Impossible", "One of the distances is smaller than the height.")
+        result = self.calculate_xy(z, distances)
+        if result is None:
+            messagebox.showerror("Calculation error", "Impossible geometry or reference points are collinear.")
             return
 
-        x = (rA2 - rB2 + self.d**2) / (2 * self.d)
-        y = (rA2 - rC2 + self.cx**2 + self.cy**2 - 2 * self.cx * x) / (2 * self.cy)
-
-        computed_dC2 = (x - self.cx)**2 + (y - self.cy)**2 + z**2
-        warning = ""
-        if abs(computed_dC2 - dC**2) > 0.05:
-            warning = f"   (inconsistent by {abs(math.sqrt(computed_dC2) - dC):.3f})"
-
+        x, y = result
         self.points.append((x, y, z))
+
+        # Optional residual warning
+        max_err = 0.0
+        refs = [self.points[i] for i in self.ref_indices]
+        for (rx, ry, _), d in zip(refs, distances):
+            horiz = math.sqrt(max(0.0, d*d - z*z))
+            actual = math.hypot(x - rx, y - ry)
+            max_err = max(max_err, abs(actual - horiz))
+        warning = f"   (max residual {max_err:.3f})" if max_err > 0.05 else ""
+
+        if self.use_as_ref.get():
+            new_idx = len(self.points) - 1
+            self.ref_indices.append(new_idx)
+            self.add_dist_entry(f"Distance to point {new_idx + 1}:")
+            self.use_as_ref.set(False)
+
         self.refresh_display()
         if warning:
             self.log(f"  (last point){warning}")
 
+        # Clear input fields
         self.entry_z.delete(0, "end")
-        self.entry_da.delete(0, "end")
-        self.entry_db.delete(0, "end")
-        self.entry_dc.delete(0, "end")
+        for ent in self.dist_entries:
+            ent.delete(0, "end")
+
+    def delete_last(self):
+        if len(self.points) <= 3:
+            messagebox.showwarning("Cannot delete", "The first three reference points cannot be deleted.")
+            return
+        last_idx = len(self.points) - 1
+        if last_idx in self.ref_indices:
+            self.dist_entries[-1].destroy()
+            self.dist_labels[-1].destroy()
+            self.dist_entries.pop()
+            self.dist_labels.pop()
+            self.ref_indices.pop()
+        self.points.pop()
+        self.refresh_display()
 
     def clear_all(self):
         self.points = []
@@ -171,9 +251,7 @@ class PointLocatorApp:
         self.entry_d13.delete(0, "end")
         self.entry_d23.delete(0, "end")
         self.entry_z.delete(0, "end")
-        self.entry_da.delete(0, "end")
-        self.entry_db.delete(0, "end")
-        self.entry_dc.delete(0, "end")
+        self.reset_distance_fields()
         self.refresh_display()
 
     def save_points(self):
@@ -218,19 +296,17 @@ class PointLocatorApp:
                 return
 
             self.points = loaded
+            self.reset_distance_fields()
             self.refresh_display()
 
-            # If we have at least the three reference points, enable adding
             if len(self.points) >= 3:
                 self.d = self.points[1][0] - self.points[0][0]
                 self.cx = self.points[2][0]
                 self.cy = self.points[2][1]
                 self.reference_ready = True
                 self.add_button.config(state="normal")
-                # Fill the reference fields so the user can see them
                 self.entry_d12.delete(0, "end")
                 self.entry_d12.insert(0, f"{self.d:.3f}")
-                # d13 and d23 are not stored; leave them blank or calculate if you want
             else:
                 self.reference_ready = False
                 self.add_button.config(state="disabled")
