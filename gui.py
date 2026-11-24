@@ -1,14 +1,14 @@
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext, filedialog
 import math
 
 class PointLocatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("3D Point Locator")
-        self.root.geometry("500x650")
+        self.root.geometry("520x720")
 
-        self.points = []          # list of (x, y, z)
+        self.points = []
         self.reference_ready = False
 
         # --- Reference points section ---
@@ -58,9 +58,16 @@ class PointLocatorApp:
         self.add_button = tk.Button(add_frame, text="Add point", command=self.add_point, state="disabled")
         self.add_button.pack(pady=5)
 
+        # --- Buttons ---
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+        tk.Button(btn_frame, text="Clear all", command=self.clear_all).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Save to .txt", command=self.save_points).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Load from .txt", command=self.load_points).pack(side="left", padx=5)
+
         # --- Display area ---
         tk.Label(root, text="Points:").pack(anchor="w", padx=10)
-        self.output = scrolledtext.ScrolledText(root, height=12, state="disabled")
+        self.output = scrolledtext.ScrolledText(root, height=14, state="disabled", font=("Consolas", 10))
         self.output.pack(fill="both", expand=True, padx=10, pady=5)
 
     def log(self, text):
@@ -68,6 +75,16 @@ class PointLocatorApp:
         self.output.insert("end", text + "\n")
         self.output.see("end")
         self.output.config(state="disabled")
+
+    def refresh_display(self):
+        self.output.config(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.config(state="disabled")
+        if not self.points:
+            return
+        self.log("Points:")
+        for i, p in enumerate(self.points, start=1):
+            self.log(f"Point {i:2d}: ({p[0]:8.3f}, {p[1]:8.3f}, {p[2]:8.3f})")
 
     def set_reference(self):
         try:
@@ -80,10 +97,6 @@ class PointLocatorApp:
             messagebox.showerror("Input error", "Please enter positive numbers for the three distances.")
             return
 
-        # Point 1 and 2
-        self.points = [(0.0, 0.0, 0.0), (d12, 0.0, 0.0)]
-
-        # Point 3
         x3 = (d13**2 - d23**2 + d12**2) / (2 * d12)
         y3_squared = d13**2 - x3**2
         if y3_squared < 0:
@@ -94,24 +107,20 @@ class PointLocatorApp:
         if self.side_var.get() == "n":
             y3 = -y3
 
-        self.points.append((x3, y3, 0.0))
+        # Update only the first three points; keep any points that were added later
+        new_first_three = [(0.0, 0.0, 0.0), (d12, 0.0, 0.0), (x3, y3, 0.0)]
+        if len(self.points) < 3:
+            self.points = new_first_three
+        else:
+            self.points[0:3] = new_first_three
 
-        # Store values needed later
         self.d = d12
         self.cx = x3
         self.cy = y3
-
         self.reference_ready = True
         self.add_button.config(state="normal")
 
-        self.output.config(state="normal")
-        self.output.delete("1.0", "end")
-        self.output.config(state="disabled")
-
-        self.log("Reference points set:")
-        self.log(f"  Point 1: (0.000, 0.000, 0.000)")
-        self.log(f"  Point 2: ({d12:.3f}, 0.000, 0.000)")
-        self.log(f"  Point 3: ({x3:.3f}, {y3:.3f}, 0.000)")
+        self.refresh_display()
 
     def add_point(self):
         if not self.reference_ready:
@@ -139,20 +148,96 @@ class PointLocatorApp:
         x = (rA2 - rB2 + self.d**2) / (2 * self.d)
         y = (rA2 - rC2 + self.cx**2 + self.cy**2 - 2 * self.cx * x) / (2 * self.cy)
 
-        # Consistency check
         computed_dC2 = (x - self.cx)**2 + (y - self.cy)**2 + z**2
         warning = ""
         if abs(computed_dC2 - dC**2) > 0.05:
-            warning = f"  (warning: inconsistent by {abs(math.sqrt(computed_dC2) - dC):.3f})"
+            warning = f"   (inconsistent by {abs(math.sqrt(computed_dC2) - dC):.3f})"
 
         self.points.append((x, y, z))
-        self.log(f"Point {len(self.points)}: ({x:.3f}, {y:.3f}, {z:.3f}){warning}")
+        self.refresh_display()
+        if warning:
+            self.log(f"  (last point){warning}")
 
-        # Clear the input fields for the next point
         self.entry_z.delete(0, "end")
         self.entry_da.delete(0, "end")
         self.entry_db.delete(0, "end")
         self.entry_dc.delete(0, "end")
+
+    def clear_all(self):
+        self.points = []
+        self.reference_ready = False
+        self.add_button.config(state="disabled")
+        self.entry_d12.delete(0, "end")
+        self.entry_d13.delete(0, "end")
+        self.entry_d23.delete(0, "end")
+        self.entry_z.delete(0, "end")
+        self.entry_da.delete(0, "end")
+        self.entry_db.delete(0, "end")
+        self.entry_dc.delete(0, "end")
+        self.refresh_display()
+
+    def save_points(self):
+        if not self.points:
+            messagebox.showinfo("Nothing to save", "No points have been entered yet.")
+            return
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Save points"
+        )
+        if not filename:
+            return
+        try:
+            with open(filename, "w") as f:
+                for p in self.points:
+                    f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
+            messagebox.showinfo("Saved", f"Saved {len(self.points)} points to\n{filename}")
+        except Exception as e:
+            messagebox.showerror("Save error", str(e))
+
+    def load_points(self):
+        filename = filedialog.askopenfilename(
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Load points"
+        )
+        if not filename:
+            return
+        try:
+            loaded = []
+            with open(filename, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                        loaded.append((x, y, z))
+            if not loaded:
+                messagebox.showwarning("Empty file", "No valid points found in the file.")
+                return
+
+            self.points = loaded
+            self.refresh_display()
+
+            # If we have at least the three reference points, enable adding
+            if len(self.points) >= 3:
+                self.d = self.points[1][0] - self.points[0][0]
+                self.cx = self.points[2][0]
+                self.cy = self.points[2][1]
+                self.reference_ready = True
+                self.add_button.config(state="normal")
+                # Fill the reference fields so the user can see them
+                self.entry_d12.delete(0, "end")
+                self.entry_d12.insert(0, f"{self.d:.3f}")
+                # d13 and d23 are not stored; leave them blank or calculate if you want
+            else:
+                self.reference_ready = False
+                self.add_button.config(state="disabled")
+
+            messagebox.showinfo("Loaded", f"Loaded {len(self.points)} points.")
+        except Exception as e:
+            messagebox.showerror("Load error", str(e))
 
 if __name__ == "__main__":
     root = tk.Tk()
